@@ -4,10 +4,12 @@ from discord import app_commands
 import icalendar
 import recurring_ical_events
 import requests
+import asyncio
 import datetime
 import pytz
 import os
 import logging
+import traceback
 
 logger = logging.getLogger(__name__)
 
@@ -16,8 +18,10 @@ TAIPEI_TZ = pytz.timezone('Asia/Taipei')
 
 def get_events(date: datetime.date) -> list[dict]:
     url = os.environ['ICLOUD_ICS_URL']
-    response = requests.get(url, timeout=15)
+    logger.info(f'正在抓取 ICS: {url[:50]}...')
+    response = requests.get(url, timeout=30)
     response.raise_for_status()
+    logger.info(f'ICS 抓取成功，大小: {len(response.content)} bytes')
 
     cal = icalendar.Calendar.from_ical(response.content)
 
@@ -25,6 +29,7 @@ def get_events(date: datetime.date) -> list[dict]:
     end = datetime.datetime.combine(date, datetime.time.max).replace(tzinfo=TAIPEI_TZ)
 
     raw_events = recurring_ical_events.of(cal).between(start, end)
+    logger.info(f'找到 {len(raw_events)} 個事件')
 
     events = []
     for vevent in raw_events:
@@ -99,10 +104,10 @@ class CalendarCog(commands.Cog):
 
         today = datetime.datetime.now(TAIPEI_TZ).date()
         try:
-            events = get_events(today)
+            events = await asyncio.to_thread(get_events, today)
             message = build_message(today, events)
         except Exception as e:
-            logger.error(f'每日推送失敗：{e}')
+            logger.error(f'每日推送失敗：{e}\n{traceback.format_exc()}')
             message = '⚠️ 無法取得今日行程，請稍後再試。'
 
         await channel.send(message)
@@ -116,11 +121,11 @@ class CalendarCog(commands.Cog):
         await interaction.response.defer()
         today = datetime.datetime.now(TAIPEI_TZ).date()
         try:
-            events = get_events(today)
+            events = await asyncio.to_thread(get_events, today)
             message = build_message(today, events)
         except Exception as e:
-            logger.error(e)
-            message = '⚠️ 無法取得行程，請稍後再試。'
+            logger.error(f'/today 失敗：{e}\n{traceback.format_exc()}')
+            message = f'⚠️ 無法取得行程：`{type(e).__name__}: {e}`'
         await interaction.followup.send(message)
 
     @app_commands.command(name='tomorrow', description='查詢明日行程')
@@ -128,11 +133,11 @@ class CalendarCog(commands.Cog):
         await interaction.response.defer()
         tomorrow = datetime.datetime.now(TAIPEI_TZ).date() + datetime.timedelta(days=1)
         try:
-            events = get_events(tomorrow)
+            events = await asyncio.to_thread(get_events, tomorrow)
             message = build_message(tomorrow, events)
         except Exception as e:
-            logger.error(e)
-            message = '⚠️ 無法取得行程，請稍後再試。'
+            logger.error(f'/tomorrow 失敗：{e}\n{traceback.format_exc()}')
+            message = f'⚠️ 無法取得行程：`{type(e).__name__}: {e}`'
         await interaction.followup.send(message)
 
 
