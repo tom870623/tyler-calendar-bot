@@ -1,56 +1,38 @@
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
-import caldav
+import icalendar
+import recurring_ical_events
+import requests
 import datetime
 import pytz
 import os
 import logging
-import traceback
 
 logger = logging.getLogger(__name__)
 
 TAIPEI_TZ = pytz.timezone('Asia/Taipei')
-ICLOUD_URL = 'https://caldav.icloud.com'
 
 
-def get_icloud_events(date: datetime.date) -> list[dict]:
-    client = caldav.DAVClient(
-        url=ICLOUD_URL,
-        username=os.environ['ICLOUD_USERNAME'],
-        password=os.environ['ICLOUD_PASSWORD']
-    )
+def get_events(date: datetime.date) -> list[dict]:
+    url = os.environ['ICLOUD_ICS_URL']
+    response = requests.get(url, timeout=15)
+    response.raise_for_status()
 
-    start = datetime.datetime.combine(date, datetime.time.min, tzinfo=TAIPEI_TZ)
-    end = datetime.datetime.combine(date, datetime.time.max, tzinfo=TAIPEI_TZ)
+    cal = icalendar.Calendar.from_ical(response.content)
+
+    start = datetime.datetime.combine(date, datetime.time.min).replace(tzinfo=TAIPEI_TZ)
+    end = datetime.datetime.combine(date, datetime.time.max).replace(tzinfo=TAIPEI_TZ)
+
+    raw_events = recurring_ical_events.of(cal).between(start, end)
 
     events = []
-    try:
-        principal = client.principal()
-        calendars = principal.calendars()
-
-        for calendar in calendars:
-            try:
-                cal_events = calendar.date_search(start=start, end=end, expand=True)
-                for event in cal_events:
-                    try:
-                        vevent = event.vobject_instance.vevent
-                        summary = str(vevent.summary.value) if hasattr(vevent, 'summary') else '（無標題）'
-                        dtstart = vevent.dtstart.value
-                        dtend = vevent.dtend.value if hasattr(vevent, 'dtend') else None
-                        events.append({
-                            'summary': summary,
-                            'dtstart': dtstart,
-                            'dtend': dtend,
-                        })
-                    except Exception as e:
-                        logger.warning(f'解析事件失敗：{e}')
-            except Exception as e:
-                logger.warning(f'讀取行事曆失敗：{e}')
-    except Exception as e:
-        logger.error(f'連線 iCloud CalDAV 失敗：{e}')
-        logger.error(traceback.format_exc())
-        raise
+    for vevent in raw_events:
+        summary = str(vevent.get('SUMMARY', '（無標題）'))
+        dtstart = vevent.get('DTSTART').dt
+        dtend_prop = vevent.get('DTEND')
+        dtend = dtend_prop.dt if dtend_prop else None
+        events.append({'summary': summary, 'dtstart': dtstart, 'dtend': dtend})
 
     def sort_key(ev):
         dtstart = ev['dtstart']
@@ -117,7 +99,7 @@ class CalendarCog(commands.Cog):
 
         today = datetime.datetime.now(TAIPEI_TZ).date()
         try:
-            events = get_icloud_events(today)
+            events = get_events(today)
             message = build_message(today, events)
         except Exception as e:
             logger.error(f'每日推送失敗：{e}')
@@ -134,9 +116,10 @@ class CalendarCog(commands.Cog):
         await interaction.response.defer()
         today = datetime.datetime.now(TAIPEI_TZ).date()
         try:
-            events = get_icloud_events(today)
+            events = get_events(today)
             message = build_message(today, events)
-        except Exception:
+        except Exception as e:
+            logger.error(e)
             message = '⚠️ 無法取得行程，請稍後再試。'
         await interaction.followup.send(message)
 
@@ -145,9 +128,10 @@ class CalendarCog(commands.Cog):
         await interaction.response.defer()
         tomorrow = datetime.datetime.now(TAIPEI_TZ).date() + datetime.timedelta(days=1)
         try:
-            events = get_icloud_events(tomorrow)
+            events = get_events(tomorrow)
             message = build_message(tomorrow, events)
-        except Exception:
+        except Exception as e:
+            logger.error(e)
             message = '⚠️ 無法取得行程，請稍後再試。'
         await interaction.followup.send(message)
 
