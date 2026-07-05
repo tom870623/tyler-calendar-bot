@@ -6,6 +6,7 @@ import datetime
 import pytz
 import os
 import logging
+import traceback
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,7 @@ def get_icloud_events(date: datetime.date) -> list[dict]:
                 logger.warning(f'讀取行事曆失敗：{e}')
     except Exception as e:
         logger.error(f'連線 iCloud CalDAV 失敗：{e}')
+        logger.error(traceback.format_exc())
         raise
 
     def sort_key(ev):
