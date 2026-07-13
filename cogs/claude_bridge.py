@@ -50,6 +50,9 @@ ALLOWED_TOOLS = [
     'Bash(date:*)',
     'Bash(bash 000_Agent/skills/morning/calendar_today.sh)',
     'Bash(bash 000_Agent/skills/morning/reminders_today.sh)',
+    'Bash(bash 000_Agent/skills/morning/next_flight.sh)',
+    'Bash(bash 000_Agent/skills/morning/weather.sh)',
+    'Bash(python3 000_Agent/skills/morning/market.py)',
     # 整個 server 先放行讀取，破壞性操作再由下面 DISALLOWED 逐一擋掉
     'mcp__gmail', 'mcp__google-calendar', 'mcp__notion', 'mcp__firecrawl',
 ]
