@@ -512,29 +512,7 @@ class CalendarLocalCog(commands.Cog):
         _save_state(state)
         self._pending_reminders.discard(uid)
 
-    @app_commands.command(name='today', description='查詢今日行程')
-    async def cmd_today(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-        today = datetime.datetime.now(TAIPEI_TZ).date()
-        try:
-            events = await asyncio.to_thread(get_events, today)
-            message = build_message(today, events)
-        except Exception as e:
-            logger.error(traceback.format_exc())
-            message = f'⚠️ 錯誤：{e}'
-        await interaction.followup.send(message)
-
-    @app_commands.command(name='tomorrow', description='查詢明日行程')
-    async def cmd_tomorrow(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-        tomorrow = datetime.datetime.now(TAIPEI_TZ).date() + datetime.timedelta(days=1)
-        try:
-            events = await asyncio.to_thread(get_events, tomorrow)
-            message = build_message(tomorrow, events)
-        except Exception as e:
-            logger.error(traceback.format_exc())
-            message = f'⚠️ 錯誤：{e}'
-        await interaction.followup.send(message)
+    # /today、/tomorrow 已移除（2026-07-14，改用 /morning 早報 + /todo 待辦看板）
 
     @app_commands.command(name='schedule', description='查詢從今天到月底的航班')
     async def cmd_schedule(self, interaction: discord.Interaction):

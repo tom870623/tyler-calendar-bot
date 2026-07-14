@@ -192,6 +192,17 @@ class ClaudeBridgeCog(commands.Cog):
         await send_long_message(interaction.followup.send, result)
         logger.info(f'/morning 完成，用時 {elapsed}s')
 
+    @app_commands.command(name='todo', description='看今天的待辦清單（讀 100_Todo 任務看板）')
+    async def cmd_todo(self, interaction: discord.Interaction):
+        await interaction.response.defer(thinking=True)
+        channel_id = str(interaction.channel_id)
+        async with self._lock_for(channel_id):
+            started = time.monotonic()
+            result, _ = await self._run_claude('/todo', channel_id)
+        elapsed = int(time.monotonic() - started)
+        await send_long_message(interaction.followup.send, result)
+        logger.info(f'/todo 完成，用時 {elapsed}s')
+
     @app_commands.command(name='ask', description='問 Claude 任何問題（唯讀，可追問）')
     @app_commands.describe(問題='想問 Claude 的內容')
     async def cmd_ask(self, interaction: discord.Interaction, 問題: str):

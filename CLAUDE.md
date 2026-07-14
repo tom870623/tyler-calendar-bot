@@ -8,13 +8,14 @@ Tyler 的 Discord Bot，每天早上 7:00（台北時間）自動推送今日 Ap
 
 | 指令 | 功能 |
 |------|------|
-| `/today` | 今日行程 |
-| `/tomorrow` | 明日行程 |
 | `/schedule` | 今天到月底的航班 |
 | `/preflight` | 下一趟航班的飛行提醒清單（含即時天氣） |
 | `/morning` | 產生今天的早晨日報（跑本機 Claude 的 `/morning` skill） |
+| `/todo` | 看今天的待辦清單（跑本機 Claude 的 `/todo` skill，讀 100_Todo 任務看板） |
 | `/ask 問題` | 問 Claude 任何問題，唯讀、可追問 |
 | `/reset` | 清掉本頻道的對話記憶 |
+
+> `/today`、`/tomorrow` 已於 2026-07-14 移除（改用 `/morning` 早報 + `/todo` 待辦看板）。每日 07:00 自動推播今日行事曆仍保留。
 
 ## Claude 橋接（morning / ask）
 
