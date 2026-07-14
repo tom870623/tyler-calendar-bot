@@ -11,13 +11,16 @@
 """
 
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord import app_commands
 import asyncio
+import datetime
 import json
 import os
 import time
 import logging
+
+import pytz
 
 from .calendar_local import send_long_message
 
@@ -57,8 +60,11 @@ ALLOWED_TOOLS = [
     'Bash(bash 000_Agent/skills/morning/next_flight.sh)',
     'Bash(bash 000_Agent/skills/morning/weather.sh)',
     'Bash(python3 000_Agent/skills/morning/market.py)',
-    # 兩個精準的「寫入」白名單：待辦看板 + 新增提醒事項腳本（其他寫入仍全鎖）
+    'Bash(python3 000_Agent/skills/morning/stale_items.py)',
+    'Bash(bash 000_Agent/skills/nightly/day_summary.sh)',
+    # 精準的「寫入」白名單：待辦看板 + 每日日誌 + 新增提醒事項腳本（其他寫入仍全鎖）
     'Write(100_Todo/**)', 'Edit(100_Todo/**)',
+    'Write(000_Agent/memory/daily/**)', 'Edit(000_Agent/memory/daily/**)',
     'Bash(bash 000_Agent/skills/todo/add_reminder.sh:*)',
     'Bash(bash 000_Agent/skills/inbox/notes_inbox.sh:*)',
     # 整個 server 先放行讀取，破壞性操作再由下面 DISALLOWED 逐一擋掉
@@ -122,6 +128,28 @@ class ClaudeBridgeCog(commands.Cog):
         self._sessions = _load_sessions()  # channel_id(str) -> session_id
         # 同一頻道同時只跑一個 claude，避免 session 互相踩到。
         self._locks: dict[str, asyncio.Lock] = {}
+        self.nightly_journal.start()
+
+    def cog_unload(self):
+        self.nightly_journal.cancel()
+
+    # 每晚 22:00（台北）＝ UTC 14:00：自動彙整今日日誌並推到頻道。
+    @tasks.loop(time=datetime.time(hour=14, minute=0, tzinfo=pytz.UTC))
+    async def nightly_journal(self):
+        channel = self.bot.get_channel(int(os.environ['DISCORD_CHANNEL_ID']))
+        if not channel:
+            return
+        channel_id = str(channel.id)
+        async with self._lock_for(channel_id):
+            result, is_error = await self._run_claude('/nightly', channel_id)
+        if is_error:
+            logger.error(f'每晚 /nightly 失敗：{result[:200]}')
+            return
+        await send_long_message(channel.send, '🌙 **今日收尾**\n\n' + result)
+
+    @nightly_journal.before_loop
+    async def _wait_ready(self):
+        await self.bot.wait_until_ready()
 
     def _lock_for(self, channel_id: str) -> asyncio.Lock:
         if channel_id not in self._locks:
@@ -211,6 +239,17 @@ class ClaudeBridgeCog(commands.Cog):
         elapsed = int(time.monotonic() - started)
         await send_long_message(interaction.followup.send, result)
         logger.info(f'/todo 完成，用時 {elapsed}s')
+
+    @app_commands.command(name='nightly', description='立刻彙整今天的日誌草稿（平常每晚 22:00 自動跑）')
+    async def cmd_nightly(self, interaction: discord.Interaction):
+        await interaction.response.defer(thinking=True)
+        channel_id = str(interaction.channel_id)
+        async with self._lock_for(channel_id):
+            started = time.monotonic()
+            result, _ = await self._run_claude('/nightly', channel_id)
+        elapsed = int(time.monotonic() - started)
+        await send_long_message(interaction.followup.send, '🌙 **今日收尾**\n\n' + result)
+        logger.info(f'/nightly 完成，用時 {elapsed}s')
 
     @app_commands.command(name='ask', description='問 Claude：查資料、加待辦/提醒事項（可追問）')
     @app_commands.describe(問題='想問 Claude 的內容')

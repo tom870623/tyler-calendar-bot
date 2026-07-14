@@ -2,7 +2,12 @@
 
 ## 這是什麼
 
-Tyler 的 Discord Bot，每天早上 7:00（台北時間）自動推送 `/morning` 早報（借用 claude_bridge 跑本機 Claude；claude 不可用時退回推今日行事曆當備援）。另有「飛行提醒清單」功能（`/preflight` + 起飛前自動推送），詳見下方。
+Tyler 的 Discord Bot，三個每日自動推播（台北時間）：
+- **07:00 早報**：跑 `/morning`（含「掛太久的事」點名區；claude 不可用時退回推今日行事曆當備援）
+- **20:00 待辦到期提醒**：`cogs/todo_reminder.py` 純 Python 掃任務看板，🔴 逾期/今天、🟠 明天、🟡 三天內；沒有到期項目就不推（寧靜優先）
+- **22:00 晚間日誌**：跑 `/nightly`，自動彙整當天工作痕跡寫進 `000_Agent/memory/daily/`，推摘要並邀請用 `/ask` 補充
+
+另有「飛行提醒清單」功能（`/preflight` + 起飛前自動推送），詳見下方。
 
 ## 指令一覽
 
@@ -11,6 +16,7 @@ Tyler 的 Discord Bot，每天早上 7:00（台北時間）自動推送 `/mornin
 | `/schedule` | 今天到月底的航班 |
 | `/preflight` | 下一趟航班的飛行提醒清單（含即時天氣） |
 | `/morning` | 產生今天的早晨日報（跑本機 Claude 的 `/morning` skill） |
+| `/nightly` | 立刻彙整今日日誌草稿（跑本機 Claude 的 `/nightly` skill） |
 | `/todo` | 看今天的待辦清單（跑本機 Claude 的 `/todo` skill，讀 100_Todo 任務看板） |
 | `/ask 問題` | 問 Claude 任何問題，唯讀、可追問 |
 | `/reset` | 清掉本頻道的對話記憶 |
@@ -135,4 +141,8 @@ async def cmd_week(self, interaction: discord.Interaction):
 
 ## 每日推送時間
 
-台北時間 07:00 = UTC 23:00
+| 台北 | UTC | 內容 | 程式位置 |
+|------|-----|------|---------|
+| 07:00 | 23:00 | `/morning` 早報 | `calendar_local.py` `daily_reminder` |
+| 20:00 | 12:00 | 待辦到期分級提醒 | `todo_reminder.py` `due_check` |
+| 22:00 | 14:00 | `/nightly` 晚間日誌 | `claude_bridge.py` `nightly_journal` |
