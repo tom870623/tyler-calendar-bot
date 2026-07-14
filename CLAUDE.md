@@ -2,7 +2,7 @@
 
 ## 這是什麼
 
-Tyler 的 Discord Bot，每天早上 7:00（台北時間）自動推送今日 Apple 行事曆，也可以用 `/today`、`/tomorrow` 手動查詢。另有「飛行提醒清單」功能（`/preflight` + 起飛前自動推送），詳見下方。
+Tyler 的 Discord Bot，每天早上 7:00（台北時間）自動推送 `/morning` 早報（借用 claude_bridge 跑本機 Claude；claude 不可用時退回推今日行事曆當備援）。另有「飛行提醒清單」功能（`/preflight` + 起飛前自動推送），詳見下方。
 
 ## 指令一覽
 
@@ -15,7 +15,7 @@ Tyler 的 Discord Bot，每天早上 7:00（台北時間）自動推送今日 Ap
 | `/ask 問題` | 問 Claude 任何問題，唯讀、可追問 |
 | `/reset` | 清掉本頻道的對話記憶 |
 
-> `/today`、`/tomorrow` 已於 2026-07-14 移除（改用 `/morning` 早報 + `/todo` 待辦看板）。每日 07:00 自動推播今日行事曆仍保留。
+> `/today`、`/tomorrow` 已於 2026-07-14 移除（改用 `/morning` 早報 + `/todo` 待辦看板）。每日 07:00 自動推播已於 2026-07-14 由「今日行事曆」改為自動跑 `/morning` 早報（行事曆為備援）。
 
 ## Claude 橋接（morning / ask）
 
@@ -76,10 +76,12 @@ discord-calendar-bot/
 
 **重啟（載入新程式碼）：**
 ```bash
-kill $(pgrep -f main_local.py)   # launchd KeepAlive 會自動用新版重生並接管
-tail -f bot.log                  # 看 log
+kill $(pgrep -f main_local.py)                  # launchd KeepAlive 會自動用新版重生並接管
+tail -f ~/Library/Logs/tyler-calendarbot.log   # 看 log（2026-07-14 起 log 搬到這，不再是 bot.log）
 ```
-⚠️ 別用 `launchctl kickstart/unload/load` 重啟——在部分環境會回 78 EX_CONFIG 不 spawn。確認 launchd 有接管：`launchctl list | grep calendarbot`（第一欄是 PID 即正常）。
+確認 launchd 有接管：`launchctl list | grep calendarbot`（第一欄是 PID 即正常）。
+
+> **關於 78 EX_CONFIG（2026-07-14 已根治）**：之前 launchd 重啟常回 78「不 spawn」，根因是 **log 檔 `bot.log` 在 `~/Downloads`（受 macOS TCC 隱私保護）**，launchd 在 exec 前要開這個 log 寫 stdio 被系統擋掉 → 還沒跑到 Python 就 EX_CONFIG。解法是把 plist 的 `StandardOutPath/StandardErrorPath` 搬到 **`~/Library/Logs/tyler-calendarbot.log`**（非保護區）。修好後 `launchctl bootout` + `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tyler.calendarbot.plist` 重載也正常了。`WorkingDirectory` 留在 Downloads 沒問題（程式起來後自己讀得到）。
 
 ### 模式 B：Railway 雲端版（備用）
 

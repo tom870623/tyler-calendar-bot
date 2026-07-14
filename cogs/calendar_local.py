@@ -408,6 +408,18 @@ class CalendarLocalCog(commands.Cog):
         channel = self.bot.get_channel(int(os.environ['DISCORD_CHANNEL_ID']))
         if not channel:
             return
+        # 早上改跑 /morning 早報（借用 claude_bridge），不再自動推整份班表。
+        bridge = self.bot.get_cog('ClaudeBridgeCog')
+        if bridge is not None:
+            try:
+                result, is_error = await bridge._run_claude('/morning', str(channel.id))
+                if not is_error:
+                    await send_long_message(channel.send, result)
+                    return
+                logger.error(f'每日 /morning 回報錯誤，改推行事曆備援：{result[:200]}')
+            except Exception as e:
+                logger.error(f'每日 /morning 失敗，改推行事曆備援：{e}\n{traceback.format_exc()}')
+        # 備援：claude 不可用時，退回原本的今日行事曆推播。
         today = datetime.datetime.now(TAIPEI_TZ).date()
         try:
             events = await asyncio.to_thread(get_events, today)
