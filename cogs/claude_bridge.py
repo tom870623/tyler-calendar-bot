@@ -40,6 +40,10 @@ RUN_TIMEOUT = 300
 APPEND_SYSTEM_PROMPT = (
     '你正在透過 Discord 回覆 Tyler。請用繁體中文、語氣自然像朋友，回覆精簡好讀，'
     '適合在聊天室顯示（避免超長）。中文與英文/數字之間加半形空格。'
+    'Tyler 要求「加提醒/提醒我…」時：執行 bash 000_Agent/skills/todo/add_reminder.sh "內容" [清單] [YYYY-MM-DD HH:MM]'
+    '（清單有 Life/自我保健/Swimming/To Buy (luxury)/Thought 等，預設 Life），會同步到他 iPhone。'
+    '要求「加待辦」時：把任務寫進 100_Todo/🎯 任務看板/ 對應清單檔（today/short_term/long_term/ideas，格式 - [ ] 任務 (截止日: MM/DD)）。'
+    '不確定用提醒還是待辦時：有明確日期時間→提醒事項；專案/規劃類→待辦看板。'
 )
 
 # ── 唯讀權限白名單 ──────────────────────────────────────────────
@@ -53,6 +57,10 @@ ALLOWED_TOOLS = [
     'Bash(bash 000_Agent/skills/morning/next_flight.sh)',
     'Bash(bash 000_Agent/skills/morning/weather.sh)',
     'Bash(python3 000_Agent/skills/morning/market.py)',
+    # 兩個精準的「寫入」白名單：待辦看板 + 新增提醒事項腳本（其他寫入仍全鎖）
+    'Write(100_Todo/**)', 'Edit(100_Todo/**)',
+    'Bash(bash 000_Agent/skills/todo/add_reminder.sh:*)',
+    'Bash(bash 000_Agent/skills/inbox/notes_inbox.sh:*)',
     # 整個 server 先放行讀取，破壞性操作再由下面 DISALLOWED 逐一擋掉
     'mcp__gmail', 'mcp__google-calendar', 'mcp__notion', 'mcp__firecrawl',
 ]
@@ -61,7 +69,8 @@ ALLOWED_TOOLS = [
 # 這是「唯讀」的保險：就算上面整個 server 被放行，這些會寫入 / 寄出 / 刪除的
 # 工具仍然打不動。
 DISALLOWED_TOOLS = [
-    'Write', 'Edit', 'NotebookEdit',
+    # Write/Edit 不整個封鎖：白名單只放行 100_Todo/**，其他路徑沒被允許＝自動拒絕。
+    'NotebookEdit',
     # Gmail：寄信、草稿、刪信、改標籤、過濾器
     'mcp__gmail__send_email', 'mcp__gmail__draft_email',
     'mcp__gmail__delete_email', 'mcp__gmail__batch_delete_emails',
@@ -203,7 +212,7 @@ class ClaudeBridgeCog(commands.Cog):
         await send_long_message(interaction.followup.send, result)
         logger.info(f'/todo 完成，用時 {elapsed}s')
 
-    @app_commands.command(name='ask', description='問 Claude 任何問題（唯讀，可追問）')
+    @app_commands.command(name='ask', description='問 Claude：查資料、加待辦/提醒事項（可追問）')
     @app_commands.describe(問題='想問 Claude 的內容')
     async def cmd_ask(self, interaction: discord.Interaction, 問題: str):
         await interaction.response.defer(thinking=True)
