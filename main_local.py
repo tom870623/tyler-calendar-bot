@@ -37,6 +37,7 @@ async def main():
         await bot.load_extension('cogs.calendar_local')
         await bot.load_extension('cogs.claude_bridge')
         await bot.load_extension('cogs.todo_reminder')
+        await bot.load_extension('cogs.lifeos_push')
         await bot.start(os.environ['DISCORD_TOKEN'])
 
 
