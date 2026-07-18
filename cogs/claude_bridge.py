@@ -22,7 +22,7 @@ import logging
 
 import pytz
 
-from .calendar_local import send_long_message
+from .calendar_local import send_long_message, push_due, _load_daily_pushes, _mark_push_sent
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +39,13 @@ SESSION_FILE = os.path.join(
 
 # 跑久一點的上限（早報要讀好幾個來源，約 60～120 秒）。
 RUN_TIMEOUT = 300
+
+# 「直接打字就回」的聊天頻道設定：
+# - CHAT_CHANNEL_ID（.env.local，選填）：精準指定某個頻道當聊天區。
+# - 或頻道名稱含下列關鍵字者，一律視為聊天頻道（免抄 ID，開個「跟分身聊天」即可）。
+# 其他頻道要 @Tyler_Agent 才會回。
+CHAT_CHANNEL_ID = os.environ.get('CHAT_CHANNEL_ID', '').strip()
+CHAT_NAME_MARKERS = ('分身', 'bot-room', 'botroom', 'bot_room', '日記', 'journal')
 
 APPEND_SYSTEM_PROMPT = (
     '你正在透過 Discord 回覆 Tyler。請用繁體中文、語氣自然像朋友，回覆精簡好讀，'
@@ -62,9 +69,10 @@ ALLOWED_TOOLS = [
     'Bash(python3 000_Agent/skills/morning/market.py)',
     'Bash(python3 000_Agent/skills/morning/stale_items.py)',
     'Bash(bash 000_Agent/skills/nightly/day_summary.sh)',
-    # 精準的「寫入」白名單：待辦看板 + 每日日誌 + 新增提醒事項腳本（其他寫入仍全鎖）
+    # 精準的「寫入」白名單：待辦看板 + 每日日誌 + 學習日記 + 新增提醒事項腳本（其他寫入仍全鎖）
     'Write(100_Todo/**)', 'Edit(100_Todo/**)',
     'Write(000_Agent/memory/daily/**)', 'Edit(000_Agent/memory/daily/**)',
+    'Write(300_Journal/**)', 'Edit(300_Journal/**)',
     'Bash(bash 000_Agent/skills/todo/add_reminder.sh:*)',
     'Bash(bash 000_Agent/skills/inbox/notes_inbox.sh:*)',
     # 整個 server 先放行讀取，破壞性操作再由下面 DISALLOWED 逐一擋掉
@@ -133,19 +141,29 @@ class ClaudeBridgeCog(commands.Cog):
     def cog_unload(self):
         self.nightly_journal.cancel()
 
-    # 每晚 22:00（台北）＝ UTC 14:00：自動彙整今日日誌並推到頻道。
-    @tasks.loop(time=datetime.time(hour=14, minute=0, tzinfo=pytz.UTC))
+    # 每 15 分檢查：台北 22:00～23:59 之間、今天還沒送過就自動彙整今日日誌（含斷線補送）。
+    @tasks.loop(minutes=15)
     async def nightly_journal(self):
-        channel = self.bot.get_channel(int(os.environ['DISCORD_CHANNEL_ID']))
+        import datetime as _dt
+        taipei = pytz.timezone('Asia/Taipei')
+        due, _tz, _place = push_due('nightly', 22, 24, tz=taipei)
+        if not due:
+            return
+        # 晚間日誌送「晚間回顧」頻道（NIGHTLY_CHANNEL_ID），沒設就退回 DISCORD_CHANNEL_ID。
+        channel = self.bot.get_channel(int(os.environ.get('NIGHTLY_CHANNEL_ID') or os.environ['DISCORD_CHANNEL_ID']))
         if not channel:
             return
         channel_id = str(channel.id)
+        today_iso = _dt.datetime.now(taipei).date().isoformat()
         async with self._lock_for(channel_id):
+            if _load_daily_pushes().get('nightly') == today_iso:
+                return
             result, is_error = await self._run_claude('/nightly', channel_id)
-        if is_error:
-            logger.error(f'每晚 /nightly 失敗：{result[:200]}')
-            return
-        await send_long_message(channel.send, '🌙 **今日收尾**\n\n' + result)
+            if is_error:
+                logger.error(f'每晚 /nightly 失敗：{result[:200]}')
+                return  # 不標記，下個週期再試
+            await send_long_message(channel.send, '🌙 **今日收尾**\n\n' + result)
+            _mark_push_sent('nightly', today_iso)
 
     @nightly_journal.before_loop
     async def _wait_ready(self):
@@ -155,6 +173,46 @@ class ClaudeBridgeCog(commands.Cog):
         if channel_id not in self._locks:
             self._locks[channel_id] = asyncio.Lock()
         return self._locks[channel_id]
+
+    def _is_chat_channel(self, channel) -> bool:
+        """判斷是不是「直接打字就回」的聊天頻道。"""
+        if CHAT_CHANNEL_ID and str(getattr(channel, 'id', '')) == CHAT_CHANNEL_ID:
+            return True
+        name = getattr(channel, 'name', '') or ''
+        return any(marker in name for marker in CHAT_NAME_MARKERS)
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        """讓你不用打 /ask：在聊天頻道直接打字、或在別的頻道 @Tyler_Agent，
+        就把訊息接進現有的 Claude 大腦回你。"""
+        # 忽略 bot 自己與其他機器人、私訊、空訊息、傳統 ! 指令
+        if message.author.bot or message.guild is None:
+            return
+        content = (message.content or '').strip()
+        if not content or content.startswith('!'):
+            return
+
+        mentioned = self.bot.user in message.mentions
+        if not (mentioned or self._is_chat_channel(message.channel)):
+            return
+
+        # 去掉 @機器人 的標記，只留下真正的問題
+        if mentioned:
+            for tag in (f'<@{self.bot.user.id}>', f'<@!{self.bot.user.id}>'):
+                content = content.replace(tag, '')
+            content = content.strip()
+        if not content:
+            content = '哈囉'
+
+        channel_id = str(message.channel.id)
+        async with self._lock_for(channel_id):
+            try:
+                async with message.channel.typing():
+                    result, _ = await self._run_claude(content, channel_id)
+            except Exception as e:
+                logger.error(f'on_message 對話失敗：{e}')
+                result = f'⚠️ 出了點狀況：{e}'
+        await send_long_message(message.channel.send, result)
 
     async def _run_claude(self, prompt: str, channel_id: str) -> tuple[str, bool]:
         """在本機跑一次 claude -p，回傳 (文字結果, 是否錯誤)。
@@ -250,6 +308,24 @@ class ClaudeBridgeCog(commands.Cog):
         elapsed = int(time.monotonic() - started)
         await send_long_message(interaction.followup.send, '🌙 **今日收尾**\n\n' + result)
         logger.info(f'/nightly 完成，用時 {elapsed}s')
+
+    @app_commands.command(name='journal', description='寫今天的學習日記（一問一答，直接在本頻道回覆即可）')
+    async def cmd_journal(self, interaction: discord.Interaction):
+        await interaction.response.defer(thinking=True)
+        channel_id = str(interaction.channel_id)
+        # Discord 版日記：叮嚀 Claude 一次只問一題純文字、問完停下等下一則訊息，不要用互動選單。
+        journal_prompt = (
+            '/journal\n\n'
+            '（重要：你正在透過 Discord 幫 Tyler 寫日記，這是聊天室不是 CLI。'
+            '請務必「一次只問一題、用純文字問、問完就停下來等我下一則訊息」，'
+            '不要用 AskUserQuestion，也不要一次把五題問完。'
+            '五題問完後生成日記給我確認；我回「OK/好」後存到 300_Journal/YYYY-MM/YYYY-MM-DD.md、'
+            '並把當中的任務同步進 100_Todo 任務看板即可。Discord 版不用 git push，存檔就好。）'
+        )
+        async with self._lock_for(channel_id):
+            result, _ = await self._run_claude(journal_prompt, channel_id)
+        await send_long_message(interaction.followup.send, result)
+        logger.info('/journal 啟動（Discord 互動模式）')
 
     @app_commands.command(name='ask', description='問 Claude：查資料、加待辦/提醒事項（可追問）')
     @app_commands.describe(問題='想問 Claude 的內容')
