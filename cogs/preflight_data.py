@@ -151,7 +151,7 @@ def flight_times(flight: dict, report_hours_before: int = 2) -> dict:
         'dep_local': None, 'dep_taipei': None, 'dep_z': None,
         'arr_local': None, 'arr_taipei': None, 'arr_z': None,
         'total': None, 'total_hours': None,
-        'dep_hour_local': None, 'dep_utc': None,
+        'dep_hour_local': None, 'dep_utc': None, 'arr_utc': None,
         'dep_same_as_taipei': True, 'arr_same_as_taipei': True,
     }
     origin, dest = _route(flight)
@@ -182,6 +182,7 @@ def flight_times(flight: dict, report_hours_before: int = 2) -> dict:
         arr_aware = _resolve_local(naive_arr, dest)
         arr_utc = arr_aware.astimezone(pytz.utc)
         arr_taipei = arr_aware.astimezone(TAIPEI_TZ)
+        res['arr_utc'] = arr_utc
         res['arr_local'] = naive_arr.strftime('%H:%M')
         res['arr_taipei'] = arr_taipei.strftime('%H:%M')
         res['arr_z'] = arr_utc.strftime('%H:%MZ')

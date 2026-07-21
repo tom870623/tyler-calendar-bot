@@ -11,6 +11,12 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 intents = discord.Intents.default()
+# 「直接打字就回」需要 Message Content Intent（讀得到訊息文字）。
+# 這個特權 intent 必須先在 Discord 開發者後台開啟，否則 bot 會登入失敗、
+# 被 launchd 一直重啟。所以用環境變數當保險：後台開好後才把 ENABLE_MESSAGE_CONTENT
+# 設成 true，避免半套狀態害 bot 崩潰重啟。
+if os.environ.get('ENABLE_MESSAGE_CONTENT', '').strip().lower() in ('1', 'true', 'yes', 'on'):
+    intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 
@@ -38,6 +44,7 @@ async def main():
         await bot.load_extension('cogs.claude_bridge')
         await bot.load_extension('cogs.todo_reminder')
         await bot.load_extension('cogs.lifeos_push')
+        await bot.load_extension('cogs.archive_completed')
         await bot.start(os.environ['DISCORD_TOKEN'])
 
 

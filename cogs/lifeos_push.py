@@ -76,6 +76,45 @@ def _flight_line(f: dict) -> str:
     return f"{f['summary']} {route} · {dep.month}/{dep.day} · {when}"
 
 
+BORN = datetime.date(2026, 6, 29)  # LifeOS 誕生日
+MEMORY_DIR = os.path.expanduser(
+    '~/.claude/projects/-Users-tyler-Downloads-Tyler-agent/memory'
+)
+
+
+def _public_stats() -> dict:
+    """給 Tyrone 公開頁的統計數。⚠️ 只放無害的「數量」，不放任何內容。"""
+    def count(fn):
+        try:
+            return fn()
+        except Exception:
+            return None
+
+    skills = count(lambda: sum(
+        1 for d in os.listdir(os.path.join(PROJECT_ROOT, '000_Agent', 'skills'))
+        if os.path.isfile(os.path.join(PROJECT_ROOT, '000_Agent', 'skills', d, 'SKILL.md'))
+    ))
+    memories = count(lambda: sum(
+        1 for f in os.listdir(MEMORY_DIR)
+        if f.endswith('.md') and f != 'MEMORY.md'
+    ))
+    domains = count(lambda: sum(
+        1 for d in os.listdir(PROJECT_ROOT)
+        if re.match(r'\d{3}_', d) and os.path.isdir(os.path.join(PROJECT_ROOT, d))
+    ))
+    mcp = count(lambda: len(
+        json.load(open(os.path.expanduser('~/.claude.json'))).get('mcpServers', {})
+    ))
+    return {
+        'skills': skills,
+        'memories': memories,
+        'domains': domains,
+        'mcp': mcp,
+        'days_alive': (datetime.datetime.now(TAIPEI_TZ).date() - BORN).days,
+        'apps_live': 3,  # Discord bot、Finance OS、LifeOS 儀表板
+    }
+
+
 def build_snapshot() -> dict:
     now = datetime.datetime.now(TAIPEI_TZ)
     today = now.date()
@@ -94,6 +133,7 @@ def build_snapshot() -> dict:
         'today_tasks': _today_tasks(),
         'due_soon': due_soon[:6],
         'stale': _stale_items(),
+        'public_stats': _public_stats(),
     }
 
 

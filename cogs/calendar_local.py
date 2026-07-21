@@ -22,7 +22,17 @@ EVA_CALENDAR_NAME = 'EVA Calander'
 PREFLIGHT_REMINDER_HOURS = 4
 REPORT_HOURS_BEFORE_TAKEOFF = 2
 SCHEDULE_SYNC_WINDOW_DAYS = 45
-STATE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'state', 'schedule_state.json')
+_STATE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'state')
+STATE_FILE = os.path.join(_STATE_DIR, 'schedule_state.json')
+# 記錄每個每日推播（morning/todo/nightly）最後成功送出的「當地日期」，用來去重 + 補送——
+# 排程當下若 bot 剛好離線（Mac 睡醒/斷網）就不會整天漏掉，等連回來、還在時段內會自動補一次。
+DAILY_PUSH_FILE = os.path.join(_STATE_DIR, 'daily_pushes.json')
+# 手動指定所在地（選填）：{"airport":"BKK"} 或 {"tz":"Asia/Bangkok","expires":"2026-07-20"}。
+# 有設且未過期時，優先於用班表自動推斷。
+LOCATION_OVERRIDE_FILE = os.path.join(_STATE_DIR, 'location_override.json')
+HOME_AIRPORT = 'TPE'  # 推斷不出來時的預設所在地（母基地）
+# 各推播的「當地時段」窗（當地時）：到點才送，超過就不補（避免推過時內容）。
+MORNING_START_HOUR, MORNING_UNTIL_HOUR = 7, 11
 
 
 def _make_client() -> caldav.DAVClient:
@@ -392,30 +402,130 @@ def _save_state(state: dict):
         json.dump(state, f, ensure_ascii=False, indent=2)
 
 
+def _load_daily_pushes() -> dict:
+    try:
+        with open(DAILY_PUSH_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _mark_push_sent(key: str, local_date_iso: str):
+    data = _load_daily_pushes()
+    data[key] = local_date_iso
+    os.makedirs(_STATE_DIR, exist_ok=True)
+    with open(DAILY_PUSH_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def _load_location_override() -> dict | None:
+    """讀手動指定的所在地；過期或讀不到回 None。"""
+    try:
+        with open(LOCATION_OVERRIDE_FILE, 'r', encoding='utf-8') as f:
+            d = json.load(f)
+    except Exception:
+        return None
+    exp = d.get('expires')
+    if exp and datetime.datetime.now(TAIPEI_TZ).date().isoformat() > str(exp):
+        return None
+    return d
+
+
+# 位置推斷有快取，避免每次檢查都打 CalDAV（位置變動慢，快取 30 分鐘）。
+_LOCATION_CACHE = {'ts': None, 'airport': None}
+
+
+def _detect_location_airport() -> str:
+    """從班表推斷『現在人在哪個機場』：最後一班已起飛航班的目的地；推不出來回母基地。"""
+    try:
+        today = datetime.datetime.now(TAIPEI_TZ).date()
+        events = get_calendar_events(
+            EVA_CALENDAR_NAME, today - datetime.timedelta(days=3), today + datetime.timedelta(days=2)
+        )
+    except Exception:
+        logger.warning('推斷位置時讀班表失敗，退回母基地', exc_info=True)
+        return HOME_AIRPORT
+    now = datetime.datetime.now(pytz.utc)
+    legs = []
+    for ev in events:
+        if not is_flight(ev) or not isinstance(ev.get('dtstart'), datetime.datetime):
+            continue
+        t = preflight_data.flight_times(ev)
+        if t.get('dep_utc') is None:
+            continue
+        legs.append((t['dep_utc'], t.get('dest') or HOME_AIRPORT))
+    legs.sort(key=lambda x: x[0])
+    loc = HOME_AIRPORT
+    for dep_utc, dest in legs:
+        if dep_utc <= now:
+            loc = dest  # 這班已起飛→人在（或正前往）目的地
+        else:
+            break       # 之後的航班還沒發生
+    return loc or HOME_AIRPORT
+
+
+def current_location():
+    """回傳 (tz, 機場代碼, 來源)。優先用手動指定，其次班表推斷（快取），最後母基地台北。"""
+    override = _load_location_override()
+    if override:
+        tzname = override.get('tz')
+        airport = override.get('airport')
+        if not tzname and airport:
+            tz = preflight_data.airport_tz(airport)
+            if tz:
+                return tz, airport, 'override'
+        if tzname:
+            try:
+                return pytz.timezone(tzname), airport or '?', 'override'
+            except Exception:
+                pass
+    now = datetime.datetime.now(pytz.utc)
+    cached = _LOCATION_CACHE['ts']
+    if cached is None or (now - cached).total_seconds() > 1800:
+        _LOCATION_CACHE['airport'] = _detect_location_airport()
+        _LOCATION_CACHE['ts'] = now
+    airport = _LOCATION_CACHE['airport']
+    tz = preflight_data.airport_tz(airport) or TAIPEI_TZ
+    return tz, airport, 'schedule'
+
+
+def push_due(key: str, start_hour: int, until_hour: int, tz=None):
+    """判斷某個每日推播現在該不該送。tz=None 代表用『目前所在地時區』（隨班表跑）。
+    回傳 (該送?, tz, 地點代碼)。"""
+    place = None
+    if tz is None:
+        tz, place, _ = current_location()
+    now_local = datetime.datetime.now(tz)
+    due = (start_hour <= now_local.hour < until_hour
+           and _load_daily_pushes().get(key) != now_local.date().isoformat())
+    return due, tz, place
+
+
 class CalendarLocalCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._pending_reminders: set[str] = set()
-        self.daily_reminder.start()
+        self._morning_lock = asyncio.Lock()  # 避免同時送出而重複
+        self.morning_check.start()
         self.schedule_sync.start()
 
     def cog_unload(self):
-        self.daily_reminder.cancel()
+        self.morning_check.cancel()
         self.schedule_sync.cancel()
 
-    @tasks.loop(time=datetime.time(hour=23, minute=0, tzinfo=pytz.UTC))
-    async def daily_reminder(self):
-        channel = self.bot.get_channel(int(os.environ['DISCORD_CHANNEL_ID']))
-        if not channel:
-            return
-        # 早上改跑 /morning 早報（借用 claude_bridge），不再自動推整份班表。
+    def _morning_channel(self):
+        # 早報送「早晨推播」頻道（MORNING_CHANNEL_ID），沒設就退回 DISCORD_CHANNEL_ID。
+        return self.bot.get_channel(int(os.environ.get('MORNING_CHANNEL_ID') or os.environ['DISCORD_CHANNEL_ID']))
+
+    async def _do_morning(self, channel) -> bool:
+        """實際送出早報（跑 /morning，失敗退回今日行事曆備援）。有成功送出回 True。"""
         bridge = self.bot.get_cog('ClaudeBridgeCog')
         if bridge is not None:
             try:
                 result, is_error = await bridge._run_claude('/morning', str(channel.id))
                 if not is_error:
                     await send_long_message(channel.send, result)
-                    return
+                    return True
                 logger.error(f'每日 /morning 回報錯誤，改推行事曆備援：{result[:200]}')
             except Exception as e:
                 logger.error(f'每日 /morning 失敗，改推行事曆備援：{e}\n{traceback.format_exc()}')
@@ -428,9 +538,29 @@ class CalendarLocalCog(commands.Cog):
             logger.error(f'每日推送失敗：{e}\n{traceback.format_exc()}')
             message = '⚠️ 無法取得今日行程。'
         await channel.send(message)
+        return True
 
-    @daily_reminder.before_loop
-    async def before_daily_reminder(self):
+    @tasks.loop(minutes=10)
+    async def morning_check(self):
+        """每 10 分檢查一次：若『你目前所在地』的當地時間已過 07:00（到 MORNING_UNTIL_HOUR
+        之間）、而今天還沒送早報，就送一次。位置由班表推斷，所以到外站會自動用當地時間；
+        排程當下離線也會在連回來後補送。一天只送一次。"""
+        due, tz, place = push_due('morning', MORNING_START_HOUR, MORNING_UNTIL_HOUR)
+        if not due:
+            return
+        async with self._morning_lock:
+            # 進鎖後再確認一次（避免兩個 tick 同時送）
+            if _load_daily_pushes().get('morning') == datetime.datetime.now(tz).date().isoformat():
+                return
+            channel = self._morning_channel()
+            if not channel:
+                return  # 還沒連上，下個週期再補
+            if await self._do_morning(channel):
+                _mark_push_sent('morning', datetime.datetime.now(tz).date().isoformat())
+                logger.info(f'早報已送（所在地 {place} / {tz}）')
+
+    @morning_check.before_loop
+    async def before_morning_check(self):
         await self.bot.wait_until_ready()
 
     @tasks.loop(minutes=30)

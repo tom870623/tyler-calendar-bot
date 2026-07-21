@@ -5,6 +5,7 @@
 沒有到期項目就整晚安靜（寧少勿多，避免通知疲勞）。
 """
 
+import asyncio
 import datetime
 import logging
 import os
@@ -13,6 +14,8 @@ import re
 import discord
 import pytz
 from discord.ext import commands, tasks
+
+from .calendar_local import push_due, _load_daily_pushes, _mark_push_sent
 
 logger = logging.getLogger(__name__)
 
@@ -106,28 +109,37 @@ def build_embed(buckets: dict[str, list[str]]) -> discord.Embed | None:
 class TodoReminderCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._lock = asyncio.Lock()
         self.due_check.start()
 
     def cog_unload(self):
         self.due_check.cancel()
 
-    # 每晚 20:00 台北 ＝ UTC 12:00
-    @tasks.loop(time=datetime.time(hour=12, minute=0, tzinfo=pytz.UTC))
+    # 每 15 分檢查：台北 20:00～23:00 之間、今天還沒推過就推一次（含斷線補送）。
+    @tasks.loop(minutes=15)
     async def due_check(self):
-        channel = self.bot.get_channel(int(os.environ['DISCORD_CHANNEL_ID']))
-        if not channel:
+        due, _tz, _place = push_due('todo', 20, 23, tz=TAIPEI_TZ)
+        if not due:
             return
-        today = datetime.datetime.now(TAIPEI_TZ).date()
-        try:
-            embed = build_embed(collect_due_tasks(today))
-        except Exception:
-            logger.exception('待辦到期掃描失敗')
-            return
-        if embed:
-            await channel.send(embed=embed)
-            logger.info('已推播待辦到期提醒')
-        else:
-            logger.info('今晚沒有到期待辦，不推播')
+        async with self._lock:
+            today = datetime.datetime.now(TAIPEI_TZ).date()
+            if _load_daily_pushes().get('todo') == today.isoformat():
+                return
+            # 待辦到期提醒送「早晨推播」頻道（MORNING_CHANNEL_ID），沒設就退回 DISCORD_CHANNEL_ID。
+            channel = self.bot.get_channel(int(os.environ.get('MORNING_CHANNEL_ID') or os.environ['DISCORD_CHANNEL_ID']))
+            if not channel:
+                return
+            try:
+                embed = build_embed(collect_due_tasks(today))
+            except Exception:
+                logger.exception('待辦到期掃描失敗')
+                return  # 不標記，下個週期再試
+            if embed:
+                await channel.send(embed=embed)
+                logger.info('已推播待辦到期提醒')
+            else:
+                logger.info('今晚沒有到期待辦，不推播')
+            _mark_push_sent('todo', today.isoformat())
 
     @due_check.before_loop
     async def _wait_ready(self):
